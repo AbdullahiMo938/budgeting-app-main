@@ -1,0 +1,11 @@
+{
+  "projects": {
+    "default": "budgetbattles-af631"
+  },
+  "targets": {},
+  "etags": {
+    "budgetbattles-af631": {
+      "extensionInstances": {}
+    }
+  }
+}

@@ -1,0 +1,75 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Allow authenticated users to read and write their own data
+    match /users/{userId} {
+      allow read: if request.auth != null && (request.auth.uid == userId || 
+        // Allow reading user data if they are in the friends list
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)/friends/$(userId)));
+      allow write: if request.auth != null && request.auth.uid == userId;
+      
+      // Allow managing friends subcollection
+      match /friends/{friendId} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+        allow write: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+    
+    // Allow authenticated users to manage their transactions
+    match /transactions/{transactionId} {
+      allow create: if request.auth != null && 
+        request.resource.data.userId == request.auth.uid;
+      allow read, update, delete: if request.auth != null && 
+        resource.data.userId == request.auth.uid;
+    }
+
+    // Allow authenticated users to manage their spending stats
+    match /spendingStats/{userId} {
+      // Allow users to read all spending stats (for leaderboard)
+      allow read: if request.auth != null;
+      // Allow users to create/update only their own stats
+      allow create, update: if request.auth != null && 
+        request.auth.uid == userId &&
+        request.resource.data.userId == userId;
+      // Allow users to delete only their own stats
+      allow delete: if request.auth != null && 
+        request.auth.uid == userId;
+    }
+
+    // Allow authenticated users to manage usernames
+    match /usernames/{username} {
+      // Allow reading any username for availability checks
+      allow read: if request.auth != null;
+      // Allow creating/updating username if it's available or belongs to the user
+      allow create, update: if request.auth != null && 
+        (!exists(/databases/$(database)/documents/usernames/$(username)) || 
+        get(/databases/$(database)/documents/usernames/$(username)).data.uid == request.auth.uid) &&
+        request.resource.data.uid == request.auth.uid;
+      // Allow deleting only if the username belongs to the user
+      allow delete: if request.auth != null && 
+        exists(/databases/$(database)/documents/usernames/$(username)) &&
+        get(/databases/$(database)/documents/usernames/$(username)).data.uid == request.auth.uid;
+    }
+    
+    // Allow authenticated users to access category chats
+    match /categoryChats/{chatId} {
+      // Allow all authenticated users to read and write to category chats
+      allow read, write: if request.auth != null;
+      
+      // Allow all authenticated users to read and write messages in category chats
+      match /messages/{messageId} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null && 
+          request.resource.data.senderId == request.auth.uid;
+        allow update, delete: if request.auth != null && 
+          resource.data.senderId == request.auth.uid;
+      }
+    }
+    
+    // Allow authenticated users to read public data
+    match /{document=**} {
+      allow read: if request.auth != null;
+    }
+  }
+}
