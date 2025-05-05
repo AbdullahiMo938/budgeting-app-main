@@ -1166,6 +1166,16 @@ button:hover {
   border-radius: 5px;
   margin-bottom: 20px;
   text-align: center;
+  animation: fadeInOut 3s ease-in-out;
+  border: 1px solid rgba(76, 175, 80, 0.3);
+  font-weight: 500;
+}
+
+@keyframes fadeInOut {
+  0% { opacity: 0; transform: translateY(-10px); }
+  10% { opacity: 1; transform: translateY(0); }
+  90% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-10px); }
 }
 
 /* Leaderboard Styles */

@@ -60,12 +60,15 @@ const AllStats = () => {
           doc(db, 'users', user.uid),
           async (userDoc) => {
             if (userDoc.exists()) {
-              const userFriends = userDoc.data()?.friends || [];
-              setFriends(userFriends);
+              // Fetch friends from subcollection
+              const friendsSnapshot = await getDocs(collection(db, 'users', user.uid, 'friends'));
+              const friendsList = friendsSnapshot.docs.map(doc => doc.id);
+              setFriends(friendsList);
               debug.steps.push({
                 step: 'Real-time user update',
                 success: true,
-                friendsCount: userFriends.length
+                friendsCount: friendsList.length,
+                friendsList: friendsList // Add this for debugging
               });
             }
           },
@@ -124,23 +127,37 @@ const AllStats = () => {
               setUsernames(newUsernames);
 
               const statsData = snapshot.docs.map(doc => {
-          const data = doc.data();
+                const data = doc.data();
                 const userId = data.userId;
+                const isFriend = friends.includes(userId);
+                const isCurrentUser = userId === user.uid;
 
-          return {
-            id: doc.id,
+                return {
+                  id: doc.id,
                   userId,
                   username: newUsernames[userId] || `User-${userId.slice(0, 4)}`,
                   totalSpending: data.totalSpending || 0,
                   lastUpdated: data.lastUpdated?.toDate() || new Date(),
-                  isFriend: friends.includes(userId),
-                  isCurrentUser: userId === user.uid
-          };
-        });
+                  isFriend,
+                  isCurrentUser
+                };
+              });
 
+              // Sort stats by total spending
               const sortedStats = statsData.sort((a, b) => b.totalSpending - a.totalSpending);
               setStats(sortedStats);
               
+              // Update category stats with friend status
+              const updatedCategoryStats = { ...categoryStats };
+              Object.keys(updatedCategoryStats).forEach(category => {
+                updatedCategoryStats[category] = updatedCategoryStats[category].map(stat => ({
+                  ...stat,
+                  isFriend: friends.includes(stat.userId),
+                  isCurrentUser: stat.userId === user.uid
+                }));
+              });
+              setCategoryStats(updatedCategoryStats);
+
               debug.steps.push({
                 step: 'Final processing',
                 success: true,
@@ -411,11 +428,13 @@ const AllStats = () => {
     );
   }
 
-  const displayStats = stats.filter(stat => stat.isFriend || stat.isCurrentUser);
+  const displayStats = showOnlyFriends 
+    ? stats.filter(stat => stat.isFriend || stat.isCurrentUser)
+    : stats;
 
-  // Get category-specific stats - show all users
+  // Get category-specific stats
   const displayCategoryStats = categoryStats[selectedCategory] || [];
-  const filteredCategoryStats = selectedCategory === 'All' 
+  const filteredCategoryStats = showOnlyFriends
     ? displayCategoryStats.filter(stat => stat.isFriend || stat.isCurrentUser)
     : displayCategoryStats;
 
@@ -430,6 +449,12 @@ const AllStats = () => {
         >
           {showOnlyFriends ? 'Show All Users' : 'Show Friends Only'}
         </button>
+        {showDebug && debugInfo && (
+          <div className="debug-info">
+            <h4>Debug Information</h4>
+            <pre>{JSON.stringify(debugInfo, null, 2)}</pre>
+          </div>
+        )}
       </div>
 
       {/* Category selector */}

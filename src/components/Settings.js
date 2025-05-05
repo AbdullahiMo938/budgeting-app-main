@@ -183,8 +183,13 @@ const Settings = () => {
         username: friendUsername
       };
       setFriends([...friends, newFriend]);
-      setFriendSuccess('Friend added successfully!');
+      setFriendSuccess(`✅ ${friendUsername} added as a friend!`);
       setFriendUsername('');
+      
+      // Clear success message after 3 seconds
+      setTimeout(() => {
+        setFriendSuccess('');
+      }, 3000);
     } catch (error) {
       console.error('Error adding friend:', error);
       setFriendError(error.message || 'Error adding friend');
