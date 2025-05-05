@@ -7,7 +7,9 @@ service cloud.firestore {
       allow read: if request.auth != null && (request.auth.uid == userId || 
         // Allow reading user data if they are in the friends list
         exists(/databases/$(database)/documents/users/$(request.auth.uid)/friends/$(userId)));
-      allow write: if request.auth != null && request.auth.uid == userId;
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow update: if request.auth != null && request.auth.uid == userId;
+      allow delete: if request.auth != null && request.auth.uid == userId;
       
       // Allow managing friends subcollection
       match /friends/{friendId} {
@@ -41,15 +43,19 @@ service cloud.firestore {
     match /usernames/{username} {
       // Allow reading any username for availability checks
       allow read: if request.auth != null;
-      // Allow creating/updating username if it's available or belongs to the user
-      allow create, update: if request.auth != null && 
-        (!exists(/databases/$(database)/documents/usernames/$(username)) || 
-        get(/databases/$(database)/documents/usernames/$(username)).data.uid == request.auth.uid) &&
+      // Allow creating username if it doesn't exist
+      allow create: if request.auth != null && 
+        !exists(/databases/$(database)/documents/usernames/$(username)) &&
+        request.resource.data.uid == request.auth.uid;
+      // Allow updating username if it belongs to the user
+      allow update: if request.auth != null && 
+        exists(/databases/$(database)/documents/usernames/$(username)) &&
+        resource.data.uid == request.auth.uid &&
         request.resource.data.uid == request.auth.uid;
       // Allow deleting only if the username belongs to the user
       allow delete: if request.auth != null && 
         exists(/databases/$(database)/documents/usernames/$(username)) &&
-        get(/databases/$(database)/documents/usernames/$(username)).data.uid == request.auth.uid;
+        resource.data.uid == request.auth.uid;
     }
     
     // Allow authenticated users to access category chats
