@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { auth, db } from '../firebase-config';
-import { doc, getDoc, setDoc, deleteDoc, collection, query, where, getDocs } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc, collection, query, where, getDocs, updateDoc } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
 import '../App.css';
 
@@ -79,51 +79,45 @@ const Settings = () => {
         throw new Error('You must be logged in to update your username');
       }
 
-      // Username validation
       if (!username) {
-        throw new Error('Username is required');
-      }
-      if (username.length < 3 || username.length > 20) {
-        throw new Error('Username must be between 3 and 20 characters');
-      }
-      if (!/^[a-zA-Z0-9_]+$/.test(username)) {
-        throw new Error('Username can only contain letters, numbers, and underscores');
+        throw new Error('Please enter a username');
       }
 
-      // If username hasn't changed, no need to update
-      if (username === currentUsername) {
-        setLoading(false);
-        return;
+      // Validate username format
+      const usernameRegex = /^[a-zA-Z0-9_]{3,20}$/;
+      if (!usernameRegex.test(username)) {
+        throw new Error('Username must be 3-20 characters long and can only contain letters, numbers, and underscores');
       }
 
-      // Check if new username is available
-      const isAvailable = await checkUsernameAvailability(username);
-      if (!isAvailable) {
-        throw new Error('Username is already taken');
+      // Check if username is already taken
+      const usernameRef = doc(db, 'usernames', username.toLowerCase());
+      const usernameDoc = await getDoc(usernameRef);
+      
+      if (usernameDoc.exists() && usernameDoc.data().uid !== user.uid) {
+        throw new Error('This username is already taken');
       }
 
-      // First, create the new username document
-      const newUsernameRef = doc(db, 'usernames', username.toLowerCase());
-      await setDoc(newUsernameRef, {
+      // Update username in usernames collection
+      await setDoc(usernameRef, {
         uid: user.uid,
-        createdAt: new Date()
+        username: username,
+        updatedAt: new Date()
       });
 
-      // Then update the user document
-      const userRef = doc(db, 'users', user.uid);
-      await setDoc(userRef, {
-        username: username,
-        lastUpdated: new Date()
-      }, { merge: true });
-
-      // Finally, delete the old username document if it exists
-      if (currentUsername) {
+      // Remove old username if it exists and is different
+      if (currentUsername && currentUsername.toLowerCase() !== username.toLowerCase()) {
         const oldUsernameRef = doc(db, 'usernames', currentUsername.toLowerCase());
         await deleteDoc(oldUsernameRef);
       }
 
-      setCurrentUsername(username);
+      // Update username in user document
+      await updateDoc(doc(db, 'users', user.uid), {
+        username: username,
+        updatedAt: new Date()
+      });
+
       setSuccess('Username updated successfully!');
+      setCurrentUsername(username);
     } catch (error) {
       console.error('Error updating username:', error);
       setError(error.message || 'Error updating username');
