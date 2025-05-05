@@ -17,9 +17,6 @@ const AllStats = () => {
   const [showDebug, setShowDebug] = useState(false);
   const [categoryStats, setCategoryStats] = useState({});
   const [selectedCategory, setSelectedCategory] = useState('All');
-  const [addingFriend, setAddingFriend] = useState(null);
-  const [actionSuccess, setActionSuccess] = useState('');
-  const [actionError, setActionError] = useState('');
   const navigate = useNavigate();
 
   // Define default categories
@@ -376,67 +373,6 @@ const AllStats = () => {
     return icons[category] || '📊';
   };
 
-  // Add this function to handle adding a friend
-  const handleAddFriend = async (userId, username) => {
-    setAddingFriend(userId);
-    setActionSuccess('');
-    setActionError('');
-    
-    try {
-      const user = auth.currentUser;
-      if (!user) {
-        throw new Error('You must be logged in to add friends');
-      }
-
-      // Check if trying to add self
-      if (userId === user.uid) {
-        throw new Error('You cannot add yourself as a friend');
-      }
-
-      // Check if already friends
-      if (friends.includes(userId)) {
-        throw new Error('You are already friends with this user');
-      }
-
-      // Add friend to user's friends list
-      const userRef = doc(db, 'users', user.uid);
-      const userDoc = await getDoc(userRef);
-      const currentFriends = userDoc.data()?.friends || [];
-
-      await setDoc(userRef, {
-        friends: [...currentFriends, userId]
-      }, { merge: true });
-
-      // Add user to friend's friends list
-      const friendRef = doc(db, 'users', userId);
-      const friendDoc = await getDoc(friendRef);
-      const friendsFriends = friendDoc.data()?.friends || [];
-
-      await setDoc(friendRef, {
-        friends: [...friendsFriends, user.uid]
-      }, { merge: true });
-
-      // Update local friends list
-      setFriends([...friends, userId]);
-      setActionSuccess(`Added ${username} as a friend!`);
-      
-      // Clear success message after 3 seconds
-      setTimeout(() => {
-        setActionSuccess('');
-      }, 3000);
-    } catch (error) {
-      console.error('Error adding friend:', error);
-      setActionError(error.message || 'Error adding friend');
-      
-      // Clear error message after 3 seconds
-      setTimeout(() => {
-        setActionError('');
-      }, 3000);
-    } finally {
-      setAddingFriend(null);
-    }
-  };
-
   // Add this function to navigate to category chat
   const handleCategoryChat = (category, e) => {
     e.stopPropagation(); // Prevent triggering the card click
@@ -487,9 +423,6 @@ const AllStats = () => {
     <div className="all-stats-container">
       <h1>Spending Leaderboard</h1>
       
-      {actionSuccess && <div className="success-message">{actionSuccess}</div>}
-      {actionError && <div className="error-message">{actionError}</div>}
-      
       <div className="leaderboard-controls">
         <button 
           className={`filter-button ${showOnlyFriends ? 'active' : ''}`}
@@ -521,16 +454,15 @@ const AllStats = () => {
         </h2>
         {filteredCategoryStats.length > 0 ? (
           <table className="leaderboard-table">
-          <thead>
-            <tr>
-              <th>Rank</th>
+            <thead>
+              <tr>
+                <th>Rank</th>
                 <th>{selectedCategory === 'All' ? 'Friend' : 'Username'}</th>
                 <th>{selectedCategory === 'All' ? 'Total Spending' : 'Percentage'}</th>
                 {selectedCategory === 'All' && <th>Last Updated</th>}
-                <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
+              </tr>
+            </thead>
+            <tbody>
               {filteredCategoryStats.map((stat, index) => (
                 <tr 
                   key={stat.userId} 
@@ -554,28 +486,11 @@ const AllStats = () => {
                     }
                   </td>
                   {selectedCategory === 'All' && stat.lastUpdated && <td>{formatDate(stat.lastUpdated)}</td>}
-                  <td>
-                    <div className="action-buttons">
-                      {!stat.isCurrentUser && !stat.isFriend && (
-                        <button 
-                          className="action-button"
-                          onClick={() => handleAddFriend(stat.userId, stat.username)}
-                          disabled={addingFriend === stat.userId}
-                        >
-                          {addingFriend === stat.userId ? (
-                            <><span className="spinner"></span> Adding...</>
-                          ) : (
-                            <>➕ Add Friend</>
-                          )}
-                        </button>
-                      )}
-                    </div>
-                  </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
           <div className="no-stats-message">
             {selectedCategory === 'All' 
               ? (friends.length === 0 
@@ -626,33 +541,6 @@ const AllStats = () => {
                             : `${stat.totalSpending}%`
                           }
                         </span>
-                        {!stat.isCurrentUser && (
-                          <div className="mini-actions">
-                            {!stat.isFriend ? (
-                              <button 
-                                className="action-button mini"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleAddFriend(stat.userId, stat.username);
-                                }}
-                                disabled={addingFriend === stat.userId}
-                              >
-                                +
-                              </button>
-                            ) : (
-                              <button 
-                                className="action-button mini primary"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  e.preventDefault();
-                                }}
-                                style={{ display: 'none' }}
-                              >
-                                💬
-                              </button>
-                            )}
-                          </div>
-                        )}
                       </div>
                     ))}
                   <button 

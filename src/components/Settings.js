@@ -34,21 +34,13 @@ const Settings = () => {
             setCurrentUsername(userData.username);
             setUsername(userData.username);
           }
-          // Fetch friends list
-          if (userData.friends) {
-            const friendPromises = userData.friends.map(async (friendId) => {
-              const friendDoc = await getDoc(doc(db, 'users', friendId));
-              if (friendDoc.exists()) {
-                return {
-                  id: friendId,
-                  username: friendDoc.data().username
-                };
-              }
-              return null;
-            });
-            const friendsList = (await Promise.all(friendPromises)).filter(friend => friend !== null);
-            setFriends(friendsList);
-          }
+          // Fetch friends from subcollection
+          const friendsSnapshot = await getDocs(collection(db, 'users', user.uid, 'friends'));
+          const friendsList = friendsSnapshot.docs.map(doc => ({
+            id: doc.id,
+            username: doc.data().username
+          }));
+          setFriends(friendsList);
         }
         setLoading(false);
       } catch (error) {
@@ -110,25 +102,25 @@ const Settings = () => {
         throw new Error('Username is already taken');
       }
 
-      // Delete old username document if it exists
-      if (currentUsername) {
-        const oldUsernameRef = doc(db, 'usernames', currentUsername.toLowerCase());
-        await deleteDoc(oldUsernameRef);
-      }
-
-      // Create new username document
-      const usernameRef = doc(db, 'usernames', username.toLowerCase());
-      await setDoc(usernameRef, {
+      // First, create the new username document
+      const newUsernameRef = doc(db, 'usernames', username.toLowerCase());
+      await setDoc(newUsernameRef, {
         uid: user.uid,
         createdAt: new Date()
       });
 
-      // Update user document
+      // Then update the user document
       const userRef = doc(db, 'users', user.uid);
       await setDoc(userRef, {
         username: username,
         lastUpdated: new Date()
       }, { merge: true });
+
+      // Finally, delete the old username document if it exists
+      if (currentUsername) {
+        const oldUsernameRef = doc(db, 'usernames', currentUsername.toLowerCase());
+        await deleteDoc(oldUsernameRef);
+      }
 
       setCurrentUsername(username);
       setSuccess('Username updated successfully!');
@@ -172,27 +164,24 @@ const Settings = () => {
       const friendId = usernameDoc.data().uid;
 
       // Check if already friends
-      if (friends.some(friend => friend.id === friendId)) {
+      const friendDoc = await getDoc(doc(db, 'users', user.uid, 'friends', friendId));
+      if (friendDoc.exists()) {
         throw new Error('You are already friends with this user');
       }
 
-      // Add friend to user's friends list
-      const userRef = doc(db, 'users', user.uid);
-      const userDoc = await getDoc(userRef);
-      const currentFriends = userDoc.data().friends || [];
+      // Add friend to user's friends subcollection
+      await setDoc(doc(db, 'users', user.uid, 'friends', friendId), {
+        username: friendUsername,
+        addedAt: new Date()
+      });
 
-      await setDoc(userRef, {
-        friends: [...currentFriends, friendId]
-      }, { merge: true });
-
-      // Add user to friend's friends list
-      const friendRef = doc(db, 'users', friendId);
-      const friendDoc = await getDoc(friendRef);
-      const friendsFriends = friendDoc.data().friends || [];
-
-      await setDoc(friendRef, {
-        friends: [...friendsFriends, user.uid]
-      }, { merge: true });
+      // Add user to friend's friends subcollection
+      const userDoc = await getDoc(doc(db, 'users', user.uid));
+      const userData = userDoc.data();
+      await setDoc(doc(db, 'users', friendId, 'friends', user.uid), {
+        username: userData.username || currentUsername,
+        addedAt: new Date()
+      });
 
       // Update local friends list
       const newFriend = {
@@ -221,23 +210,11 @@ const Settings = () => {
         throw new Error('You must be logged in to remove friends');
       }
 
-      // Remove friend from user's friends list
-      const userRef = doc(db, 'users', user.uid);
-      const userDoc = await getDoc(userRef);
-      const currentFriends = userDoc.data().friends || [];
-      
-      await setDoc(userRef, {
-        friends: currentFriends.filter(id => id !== friendId)
-      }, { merge: true });
+      // Remove friend from user's friends subcollection
+      await deleteDoc(doc(db, 'users', user.uid, 'friends', friendId));
 
-      // Remove user from friend's friends list
-      const friendRef = doc(db, 'users', friendId);
-      const friendDoc = await getDoc(friendRef);
-      const friendsFriends = friendDoc.data().friends || [];
-
-      await setDoc(friendRef, {
-        friends: friendsFriends.filter(id => id !== user.uid)
-      }, { merge: true });
+      // Remove user from friend's friends subcollection
+      await deleteDoc(doc(db, 'users', friendId, 'friends', user.uid));
 
       // Update local friends list
       setFriends(friends.filter(friend => friend.id !== friendId));

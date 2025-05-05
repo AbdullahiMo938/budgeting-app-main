@@ -13,8 +13,18 @@ service cloud.firestore {
       
       // Allow managing friends subcollection
       match /friends/{friendId} {
-        allow read: if request.auth != null && request.auth.uid == userId;
-        allow write: if request.auth != null && request.auth.uid == userId;
+        allow read: if request.auth != null && (
+          request.auth.uid == userId || 
+          request.auth.uid == friendId
+        );
+        allow create: if request.auth != null && (
+          request.auth.uid == userId || 
+          request.auth.uid == friendId
+        );
+        allow delete: if request.auth != null && (
+          request.auth.uid == userId || 
+          request.auth.uid == friendId
+        );
       }
     }
     
@@ -49,12 +59,10 @@ service cloud.firestore {
         request.resource.data.uid == request.auth.uid;
       // Allow updating username if it belongs to the user
       allow update: if request.auth != null && 
-        exists(/databases/$(database)/documents/usernames/$(username)) &&
         resource.data.uid == request.auth.uid &&
         request.resource.data.uid == request.auth.uid;
       // Allow deleting only if the username belongs to the user
       allow delete: if request.auth != null && 
-        exists(/databases/$(database)/documents/usernames/$(username)) &&
         resource.data.uid == request.auth.uid;
     }
     
