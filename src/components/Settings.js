@@ -169,13 +169,17 @@ const Settings = () => {
         addedAt: new Date()
       });
 
-      // Add user to friend's friends subcollection
-      const userDoc = await getDoc(doc(db, 'users', user.uid));
-      const userData = userDoc.data();
-      await setDoc(doc(db, 'users', friendId, 'friends', user.uid), {
-        username: userData.username || currentUsername,
-        addedAt: new Date()
-      });
+      // Try to add user to friend's friends subcollection, but don't block success if it fails
+      try {
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        const userData = userDoc.data();
+        await setDoc(doc(db, 'users', friendId, 'friends', user.uid), {
+          username: userData.username || currentUsername,
+          addedAt: new Date()
+        });
+      } catch (reciprocalError) {
+        console.warn('Could not add reciprocal friend entry:', reciprocalError);
+      }
 
       // Update local friends list
       const newFriend = {

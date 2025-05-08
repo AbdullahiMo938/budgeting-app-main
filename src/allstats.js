@@ -475,7 +475,9 @@ const AllStats = () => {
 
       <div className="leaderboard-table-container">
         <h2 className="category-heading">
-          {selectedCategory === 'All' ? 'Friends Total Spending' : `${selectedCategory} Spending Percentage`}
+          {selectedCategory === 'All'
+            ? (showOnlyFriends ? 'Friend Total Spending' : 'All User Spending')
+            : `${selectedCategory} Spending Percentage`}
         </h2>
         {filteredCategoryStats.length > 0 ? (
           <table className="leaderboard-table">

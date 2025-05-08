@@ -36,6 +36,11 @@ service cloud.firestore {
         resource.data.userId == request.auth.uid;
     }
 
+    // Allow authenticated users to manage their goals
+    match /goals/{userId} {
+      allow read, create, update, delete: if request.auth != null && request.auth.uid == userId;
+    }
+
     // Allow authenticated users to manage their spending stats
     match /spendingStats/{userId} {
       // Allow users to read all spending stats (for leaderboard)

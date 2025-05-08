@@ -12,6 +12,7 @@ import BudgetDashboard from "./components/BudgetDashboard";
 import Navigation from "./components/Navigation";
 import Settings from "./components/Settings";
 import Chat from "./components/Chat";
+import Goals from "./Goals";
 
 function App() {
   const navigate = useNavigate();
@@ -52,6 +53,7 @@ function App() {
         <Route path="/settings" element={<Settings />} />
         <Route path="/chat" element={<Chat />} />
         <Route path="/chat/category/:categoryId" element={<Chat />} />
+        <Route path="/goals" element={<Goals />} />
       </Routes>
     </div>
   );

@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { db, auth } from "../firebase-config";
-import { collection, query, where, getDocs, doc, getDoc, setDoc, Timestamp } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, getDoc, setDoc, Timestamp, updateDoc, arrayUnion } from 'firebase/firestore';
 import { calculateOptimizedBudget, getSpendingAlerts } from "../utils/budgetOptimizer";
 import { useNavigate } from 'react-router-dom';
 import {
@@ -39,10 +39,20 @@ const BudgetDashboard = () => {
   const [dataFetched, setDataFetched] = useState(false);
   const [efficiencyMetrics, setEfficiencyMetrics] = useState({});
   const [selectedMetricCategory, setSelectedMetricCategory] = useState('All');
+  const [showBudgetModal, setShowBudgetModal] = useState(false);
+  const [newBudget, setNewBudget] = useState('');
+  const [newCategoryBudgets, setNewCategoryBudgets] = useState({});
+  // Milestone tracker state variables
+  const [userGoals, setUserGoals] = useState([]);
+  const [selectedGoal, setSelectedGoal] = useState(null);
+  const [newSavingAmount, setNewSavingAmount] = useState('');
+  const [showMilestoneModal, setShowMilestoneModal] = useState(false);
+  const [reachedMilestone, setReachedMilestone] = useState(null);
+  const confettiRef = useRef(null);
 
   // Use useMemo for arrays to prevent unnecessary re-renders
   const COLORS = useMemo(() => 
-    ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#0ef', '#ff69b4', '#ba55d3']
+    ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#0ef', '#ba55d3']
   , []);
 
   // Use useMemo to prevent primitive values from being recreated
@@ -224,6 +234,31 @@ const BudgetDashboard = () => {
         throw error;
       }
 
+      // Get user's financial goals if they exist
+      try {
+        const userGoalsRef = doc(db, "goals", user.uid);
+        const userGoalsSnapshot = await getDoc(userGoalsRef);
+        
+        // Process goals data if it exists
+        const goalsData = [];
+        if (userGoalsSnapshot.exists()) {
+          const goals = userGoalsSnapshot.data().goals || [];
+          goals.forEach(goal => {
+            if (goal.targetAmount && goal.currentAmount !== undefined) {
+              const progressPercent = (goal.currentAmount / goal.targetAmount) * 100;
+              goalsData.push({
+                ...goal,
+                progressPercent: Math.min(progressPercent, 100)
+              });
+            }
+          });
+        }
+        setUserGoals(goalsData);
+      } catch (error) {
+        console.error("Error fetching goals:", error);
+        // Continue with other data fetching even if goals fail
+      }
+
       // Get transactions for trends
       const threeMonthsAgo = new Date();
       threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
@@ -327,13 +362,9 @@ const BudgetDashboard = () => {
       const monthlyComparisonData = Object.entries(monthlySpending)
         .map(([month, data]) => ({
           month,
-          total: Number(data.total.toFixed(2)),
-          ...Object.fromEntries(
-            Object.entries(data.categories).map(([cat, val]) => [
-              cat,
-              Number(val.toFixed(2))
-            ])
-          )
+          actual: Number(data.total.toFixed(2)),
+          predicted: null,
+          budget: Number((optimization?.currentBudget || DEFAULT_MONTHLY_BUDGET).toFixed(2))
         }))
         .sort((a, b) => {
           const [aMonth, aYear] = a.month.split(' ');
@@ -343,8 +374,22 @@ const BudgetDashboard = () => {
           return aDate - bDate;
         });
 
-      console.log("Processed monthly comparison data:", monthlyComparisonData); // Debug log
-      setMonthlyComparison(monthlyComparisonData);
+      // Add predicted data for future months
+      const predictedData = generatePredictedMonthlyData(optimization?.currentBudget || DEFAULT_MONTHLY_BUDGET);
+
+      // Combine actual and predicted data
+      const combinedData = [...monthlyComparisonData];
+      
+      // Add predicted data for months that don't have actual data
+      predictedData.forEach(predicted => {
+        const existingMonth = combinedData.find(item => item.month === predicted.month);
+        if (!existingMonth) {
+          combinedData.push(predicted);
+        }
+      });
+
+      console.log("Processed monthly comparison data:", combinedData); // Debug log
+      setMonthlyComparison(combinedData);
 
       // Process category distribution
       let distributionData;
@@ -436,6 +481,19 @@ const BudgetDashboard = () => {
             console.log("Fetching dashboard data for user:", user.uid); // Debug log
             await fetchDashboardData(user);
             setDataFetched(true);
+            
+            // Check for goalId parameter in URL
+            const urlParams = new URLSearchParams(window.location.search);
+            const goalId = urlParams.get('goalId');
+            
+            if (goalId && userGoals.length > 0) {
+              // Find the goal with matching ID
+              const goalToEdit = userGoals.find(goal => goal.id === goalId);
+              if (goalToEdit) {
+                // Set this goal as the selected goal to open the modal
+                setSelectedGoal(goalToEdit);
+              }
+            }
           } catch (error) {
             console.error("Error in auth state change handler:", error);
             if (error.code === 'auth/quota-exceeded') {
@@ -469,7 +527,27 @@ const BudgetDashboard = () => {
         authUnsubscribe();
       }
     };
-  }, [navigate, fetchDashboardData, checkUserPermissions, handlePermissionError, dataFetched]);
+  }, [navigate, fetchDashboardData, checkUserPermissions, handlePermissionError, dataFetched, userGoals]);
+
+  // Add a separate useEffect to handle the URL goalId parameter
+  useEffect(() => {
+    // Only run this when we have goals loaded
+    if (userGoals.length > 0 && !selectedGoal) {
+      // Check for goalId parameter in URL
+      const urlParams = new URLSearchParams(window.location.search);
+      const goalId = urlParams.get('goalId');
+      
+      if (goalId) {
+        // Find the goal with matching ID
+        const goalToEdit = userGoals.find(goal => goal.id === goalId);
+        if (goalToEdit) {
+          console.log("Found goal from URL parameter, opening modal", goalId);
+          // Set this goal as the selected goal to open the modal
+          setSelectedGoal(goalToEdit);
+        }
+      }
+    }
+  }, [userGoals, selectedGoal]);
 
   // Add a function to manually refresh data
   const handleManualRefresh = async () => {
@@ -513,10 +591,16 @@ const BudgetDashboard = () => {
     for (let i = 0; i < 3; i++) {
       const date = new Date();
       date.setMonth(today.getMonth() + i);
+      
+      // Generate a random variation between 80% and 120% of the budget
+      const variation = 0.8 + Math.random() * 0.4; // Random number between 0.8 and 1.2
+      const predictedSpending = monthlyBudget * variation;
+      
       data.push({
         month: date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
-        total: monthlyBudget,
-        isPredicted: true
+        actual: null,
+        predicted: Number(predictedSpending.toFixed(2)),
+        budget: Number(monthlyBudget.toFixed(2))
       });
     }
     return data;
@@ -629,6 +713,7 @@ const BudgetDashboard = () => {
         });
       });
       
+      console.log("Calculated efficiency metrics:", efficiencyMetrics); // Debug log
       return efficiencyMetrics;
     } catch (error) {
       console.error('Error calculating efficiency metrics:', error);
@@ -641,6 +726,7 @@ const BudgetDashboard = () => {
     if (auth.currentUser) {
       const fetchEfficiencyData = async () => {
         const metrics = await calculateEfficiencyMetrics();
+        console.log("Setting efficiency metrics:", metrics); // Debug log
         setEfficiencyMetrics(metrics);
       };
       
@@ -648,7 +734,7 @@ const BudgetDashboard = () => {
     }
   }, [calculateEfficiencyMetrics]);
 
-  // Add a new function to render the efficiency leaderboard
+  // Update the renderEfficiencyLeaderboard function
   const renderEfficiencyLeaderboard = () => {
     const categories = Object.keys(DEFAULT_CATEGORIES).concat('Other');
     
@@ -876,6 +962,402 @@ const BudgetDashboard = () => {
     }
   `;
 
+  // Add this function to handle budget updates
+  const handleBudgetUpdate = async () => {
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error('User not authenticated');
+
+      const totalBudget = parseFloat(newBudget);
+      if (isNaN(totalBudget) || totalBudget <= 0) {
+        throw new Error('Please enter a valid budget amount');
+      }
+
+      // Calculate category allocations
+      const categoryAllocations = Object.entries(newCategoryBudgets).map(([category, percentage]) => ({
+        name: category,
+        allocation: totalBudget * (percentage / 100),
+        percentage: percentage
+      }));
+
+      // Update user's budget in Firestore
+      const userRef = doc(db, 'users', user.uid);
+      await setDoc(userRef, {
+        budget: totalBudget,
+        categories: categoryAllocations,
+        lastUpdated: Timestamp.now()
+      }, { merge: true });
+
+      // Update local state
+      setOptimization(prev => ({
+        ...prev,
+        currentBudget: totalBudget
+      }));
+
+      // Update monthly comparison data with new budget
+      setMonthlyComparison(prev => prev.map(item => ({
+        ...item,
+        budget: totalBudget
+      })));
+
+      // Update spending trends with new budget predictions
+      setSpendingTrends(prev => {
+        const actualData = prev.filter(item => !item.isPredicted);
+        const predictedData = generatePredictedDailyData(totalBudget);
+        return [...actualData, ...predictedData];
+      });
+
+      setShowBudgetModal(false);
+      setNewBudget('');
+      setNewCategoryBudgets({});
+      
+      // Refresh the dashboard data
+      await fetchDashboardData(user);
+    } catch (error) {
+      console.error('Error updating budget:', error);
+      setError(error.message);
+    }
+  };
+
+  // Add this function to render the budget management modal
+  const renderBudgetModal = () => {
+    if (!showBudgetModal) return null;
+
+    return (
+      <div className="modal-overlay">
+        <div className="modal-content budget-modal">
+          <h3>Update Your Budget</h3>
+          <div className="budget-input-group">
+            <label>Monthly Budget (£)</label>
+            <input
+              type="number"
+              value={newBudget}
+              onChange={(e) => setNewBudget(e.target.value)}
+              placeholder="Enter your monthly budget"
+              min="0"
+              step="0.01"
+            />
+          </div>
+          
+          <div className="category-budgets">
+            <h4>Category Allocations (%)</h4>
+            {Object.entries(DEFAULT_CATEGORIES).map(([category, defaultPercentage]) => (
+              <div key={category} className="category-budget-input">
+                <label>{category}</label>
+                <div className="budget-percent-input">
+                  <input
+                    type="number"
+                    value={newCategoryBudgets[category] || defaultPercentage * 100}
+                    onChange={(e) => setNewCategoryBudgets(prev => ({
+                      ...prev,
+                      [category]: parseFloat(e.target.value) || 0
+                    }))}
+                    min="0"
+                    max="100"
+                    step="0.1"
+                  />
+                  <span>%</span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="modal-actions">
+            <button className="secondary-button" onClick={() => setShowBudgetModal(false)}>Cancel</button>
+            <button className="primary-button" onClick={handleBudgetUpdate}>Update Budget</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Function to add a new saving to a goal
+  const addSavingToGoal = async (goalId, amount) => {
+    try {
+      if (!amount || isNaN(amount) || amount <= 0) {
+        alert("Please enter a valid amount");
+        return;
+      }
+
+      const user = auth.currentUser;
+      if (!user) {
+        console.error("User not authenticated");
+        alert("You must be logged in to update your goals. Please sign in and try again.");
+        navigate('/login');
+        return;
+      }
+
+      console.log("Adding saving to goal:", goalId);
+      console.log("User ID:", user.uid);
+      console.log("Amount:", amount);
+
+      const parsedAmount = parseFloat(amount);
+      const goalIndex = userGoals.findIndex(g => g.id === goalId);
+      
+      if (goalIndex === -1) {
+        console.error("Goal not found:", goalId);
+        alert("Goal not found. It may have been deleted.");
+        return;
+      }
+      
+      const goal = userGoals[goalIndex];
+      const newAmount = goal.currentAmount + parsedAmount;
+      const previousMilestones = goal.milestones ? goal.milestones.filter(m => m.amount <= goal.currentAmount) : [];
+      
+      console.log("Current amount:", goal.currentAmount);
+      console.log("New amount after contribution:", newAmount);
+      
+      // Check for new milestones reached
+      let newMilestoneReached = null;
+      if (goal.milestones) {
+        for (const milestone of goal.milestones) {
+          if (milestone.amount > goal.currentAmount && milestone.amount <= newAmount) {
+            newMilestoneReached = milestone;
+            console.log("New milestone reached:", milestone.name);
+            break;
+          }
+        }
+      }
+      
+      // Update the goal in Firestore
+      const userGoalsRef = doc(db, "goals", user.uid);
+      console.log("Writing to document path:", userGoalsRef.path);
+      
+      // Get the current document first
+      const userGoalsSnapshot = await getDoc(userGoalsRef);
+      
+      if (!userGoalsSnapshot.exists()) {
+        console.error("Goals document doesn't exist");
+        alert("Your goals data couldn't be found. Please try recreating your goal.");
+        return;
+      }
+      
+      const currentGoals = userGoalsSnapshot.data().goals || [];
+      
+      if (goalIndex >= currentGoals.length) {
+        console.error("Goal index out of bounds");
+        alert("There was an error updating your goal. Please refresh and try again.");
+        return;
+      }
+      
+      // Create an updated copy of the goals array
+      const updatedGoals = [...currentGoals];
+      
+      // Update the specific goal with new values
+      if (updatedGoals[goalIndex]) {
+        updatedGoals[goalIndex] = {
+          ...updatedGoals[goalIndex],
+          currentAmount: newAmount,
+          lastContribution: {
+            amount: parsedAmount,
+            date: new Date()
+          }
+        };
+        
+        // Add to contribution history if it exists, or create it
+        if (!updatedGoals[goalIndex].contributionHistory) {
+          updatedGoals[goalIndex].contributionHistory = [];
+        }
+        
+        updatedGoals[goalIndex].contributionHistory.push({
+          amount: parsedAmount,
+          date: new Date(),
+          milestoneReached: newMilestoneReached ? newMilestoneReached.name : null
+        });
+        
+        // Update the entire goals array
+        await updateDoc(userGoalsRef, {
+          goals: updatedGoals
+        });
+        
+        console.log("Goal updated successfully");
+      } else {
+        throw new Error("Goal data is invalid");
+      }
+      
+      // Update local state
+      const updatedLocalGoals = [...userGoals];
+      updatedLocalGoals[goalIndex] = {
+        ...goal,
+        currentAmount: newAmount,
+        progressPercent: Math.min((newAmount / goal.targetAmount) * 100, 100),
+        lastContribution: {
+          amount: parsedAmount,
+          date: new Date()
+        }
+      };
+      
+      setUserGoals(updatedLocalGoals);
+      setNewSavingAmount('');
+      setSelectedGoal(null);
+      
+      // Show milestone celebration if a new milestone was reached
+      if (newMilestoneReached) {
+        setReachedMilestone(newMilestoneReached);
+        setShowMilestoneModal(true);
+        // Run confetti animation
+        if (confettiRef.current) {
+          // In a real implementation, you would trigger confetti here
+          console.log("Confetti animation would play here!");
+        }
+      }
+      
+      alert("Contribution added successfully!");
+      
+    } catch (error) {
+      console.error("Error adding saving to goal:", error);
+      let errorMessage = "Failed to update goal. ";
+      
+      if (error.code === 'permission-denied') {
+        errorMessage += "You don't have permission to update this goal.";
+      } else if (error.code === 'unauthenticated') {
+        errorMessage += "You are not authenticated. Please sign in again.";
+        navigate('/login');
+      } else if (error.code === 'unavailable') {
+        errorMessage += "The service is temporarily unavailable. Please try again later.";
+      } else {
+        errorMessage += error.message || "Please try again.";
+      }
+      
+      alert(errorMessage);
+    }
+  };
+  
+  // Default milestones for new goals
+  const generateDefaultMilestones = (targetAmount) => {
+    const milestones = [];
+    const milestonePercentages = [25, 50, 75, 90];
+    
+    milestonePercentages.forEach(percentage => {
+      const amount = (percentage / 100) * targetAmount;
+      milestones.push({
+        name: `${percentage}% Complete`,
+        amount,
+        description: `You've reached ${percentage}% of your goal!`,
+        icon: percentage >= 75 ? '🏆' : percentage >= 50 ? '🌟' : '🎯'
+      });
+    });
+    
+    return milestones;
+  };
+
+  // Render the milestone celebration modal
+  const renderMilestoneModal = () => {
+    if (!showMilestoneModal || !reachedMilestone) return null;
+    
+    return (
+      <div className="milestone-modal-overlay">
+        <div className="milestone-modal">
+          <div className="milestone-header">
+            <span className="milestone-icon">{reachedMilestone.icon || '🎉'}</span>
+            <h3>Milestone Reached!</h3>
+          </div>
+          <div className="milestone-content">
+            <p className="milestone-name">{reachedMilestone.name}</p>
+            <p className="milestone-description">{reachedMilestone.description}</p>
+            <div className="milestone-amount">£{reachedMilestone.amount.toFixed(2)}</div>
+          </div>
+          <button 
+            className="primary-button" 
+            onClick={() => setShowMilestoneModal(false)}
+          >
+            Keep Going!
+          </button>
+          <div ref={confettiRef} className="confetti-container"></div>
+        </div>
+      </div>
+    );
+  };
+
+  // Render the savings modal
+  const renderSavingsModal = () => {
+    if (!selectedGoal) return null;
+    
+    // Calculate next milestone
+    let nextMilestone = null;
+    if (selectedGoal.milestones) {
+      for (const milestone of selectedGoal.milestones) {
+        if (milestone.amount > selectedGoal.currentAmount) {
+          nextMilestone = milestone;
+          break;
+        }
+      }
+    }
+    
+    const remainingAmount = selectedGoal.targetAmount - selectedGoal.currentAmount;
+    const progressPercent = (selectedGoal.currentAmount / selectedGoal.targetAmount) * 100;
+    
+    return (
+      <div className="modal-overlay">
+        <div className="saving-modal">
+          <h3>Add to Your Savings Goal</h3>
+          <div className="saving-modal-content">
+            <div className="goal-summary">
+              <div className="goal-summary-row">
+                <span>Goal:</span>
+                <span>{selectedGoal.name}</span>
+              </div>
+              <div className="goal-summary-row">
+                <span>Current savings:</span>
+                <span>£{selectedGoal.currentAmount.toFixed(2)}</span>
+              </div>
+              <div className="goal-summary-row">
+                <span>Target amount:</span>
+                <span>£{selectedGoal.targetAmount.toFixed(2)}</span>
+              </div>
+              <div className="goal-summary-row">
+                <span>Remaining:</span>
+                <span>£{remainingAmount.toFixed(2)}</span>
+              </div>
+              <div className="goal-summary-row">
+                <span>Progress:</span>
+                <span>{progressPercent.toFixed(0)}%</span>
+              </div>
+              
+              {nextMilestone && (
+                <div className="next-milestone">
+                  <span>Next milestone:</span>
+                  <span>{nextMilestone.name} (£{nextMilestone.amount.toFixed(2)})</span>
+                </div>
+              )}
+            </div>
+            
+            <div className="saving-input-group">
+              <label>Contribution Amount (£):</label>
+              <input
+                type="number"
+                value={newSavingAmount}
+                onChange={(e) => setNewSavingAmount(e.target.value)}
+                placeholder="Enter amount"
+                min="0.01"
+                step="0.01"
+              />
+            </div>
+          </div>
+          
+          <div className="saving-modal-actions">
+            <button
+              className="secondary-button"
+              onClick={() => {
+                setSelectedGoal(null);
+                setNewSavingAmount('');
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              className="primary-button"
+              onClick={() => addSavingToGoal(selectedGoal.id, newSavingAmount)}
+              disabled={!newSavingAmount || parseFloat(newSavingAmount) <= 0}
+            >
+              Add to Savings
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderContent = () => {
     console.log("Rendering content. Loading:", loading, "Error:", error); // Debug log
     console.log("Data state - Trends:", spendingTrends.length, "Distribution:", categoryDistribution.length); // Debug log
@@ -908,106 +1390,278 @@ const BudgetDashboard = () => {
       );
     }
 
-    // Show predicted data if no actual data exists
-    const showPredictedData = (!spendingTrends || spendingTrends.length === 0);
-    const trendData = showPredictedData ? generatePredictedDailyData(DEFAULT_MONTHLY_BUDGET) : spendingTrends;
-    const monthlyData = showPredictedData ? generatePredictedMonthlyData(DEFAULT_MONTHLY_BUDGET) : monthlyComparison;
-
     return (
       <>
         <div className="dashboard-section">
-          <h3>Spending Trends</h3>
-          <div className="chart-container">
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={trendData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis 
-                  dataKey="date"
-                  tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                />
-                <YAxis />
-                <Tooltip 
-                  formatter={(value, name, props) => {
-                    const prefix = props.payload.isPredicted ? 'Predicted: ' : '';
-                    return [`${prefix}£${value.toFixed(2)}`, 'Daily Spending'];
-                  }}
-                />
-                <Legend />
-                <Line 
-                  type="monotone" 
-                  dataKey="amount" 
-                  stroke="#8884d8" 
-                  activeDot={{ r: 8 }}
-                  name="Daily Spending"
-                  strokeDasharray={trendData[0]?.isPredicted ? "5 5" : "0"}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-            {showPredictedData && (
-              <div className="prediction-note">
-                <p>* Showing predicted spending. Add transactions to see your actual spending patterns.</p>
-                <button 
-                  onClick={() => navigate('/add-transaction')} 
-                  className="add-transaction-button"
-                >
-                  Add Transaction
-                </button>
+          <div className="section-header">
+            <h3>Budget Management</h3>
+          </div>
+          <div className="current-budget">
+            <div className="budget-input-section">
+              <div className="budget-input-group">
+                <label>Monthly Budget (£)</label>
+                <div className="budget-input-wrapper">
+                  <input
+                    type="number"
+                    value={newBudget || optimization?.currentBudget || DEFAULT_MONTHLY_BUDGET}
+                    onChange={(e) => setNewBudget(e.target.value)}
+                    placeholder="Enter your monthly budget"
+                    min="0"
+                    step="0.01"
+                  />
+                  <button 
+                    onClick={handleBudgetUpdate}
+                    className="save-budget-button"
+                  >
+                    Save
+                  </button>
+                </div>
               </div>
-            )}
+            </div>
+
+            <div className="budget-categories">
+              {Object.entries(DEFAULT_CATEGORIES).map(([category, defaultPercentage]) => (
+                <div key={category} className="budget-category">
+                  <div className="category-header">
+                    <span className="category-name">{category}</span>
+                    <div className="category-input">
+                      <input
+                        type="number"
+                        value={newCategoryBudgets[category] || defaultPercentage * 100}
+                        onChange={(e) => setNewCategoryBudgets(prev => ({
+                          ...prev,
+                          [category]: parseFloat(e.target.value) || 0
+                        }))}
+                        min="0"
+                        max="100"
+                        step="0.1"
+                      />
+                      <span>%</span>
+                    </div>
+                  </div>
+                  <div className="category-amount">
+                    £{((newBudget || optimization?.currentBudget || DEFAULT_MONTHLY_BUDGET) * 
+                      (newCategoryBudgets[category] || defaultPercentage * 100) / 100).toFixed(2)}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
-        {/* Monthly Comparison */}
+        {/* Milestone Tracker */}
         <div className="dashboard-section">
+          <h3>Financial Goals Progress</h3>
+          {userGoals.length > 0 ? (
+            <>
+              <div className="goals-container">
+                {userGoals.map((goal, index) => (
+                  <div key={index} className="goal-card">
+                    <h3 className="goal-title">{goal.name}</h3>
+                    <div className="goal-amounts">
+                      <span className="current-amount">£{goal.currentAmount.toFixed(2)}</span>
+                      <span className="target-amount">of £{goal.targetAmount.toFixed(2)}</span>
+                    </div>
+                    <div className="progress-bar-container">
+                      <div 
+                        className="progress-bar" 
+                        style={{ width: `${goal.progressPercent}%` }}
+                      ></div>
+                    </div>
+                    <div className="progress-percentage">{goal.progressPercent.toFixed(0)}% Complete</div>
+                    {goal.targetDate && (
+                      <div className="goal-date">
+                        Target: {new Date(goal.targetDate).toLocaleDateString()}
+                      </div>
+                    )}
+                    {goal.milestones && goal.milestones.length > 0 && (
+                      <div className="milestones-preview">
+                        {goal.milestones.map((milestone, idx) => {
+                          const isReached = goal.currentAmount >= milestone.amount;
+                          return (
+                            <div 
+                              key={idx} 
+                              className={`milestone-dot ${isReached ? 'reached' : ''}`}
+                              style={{ left: `${(milestone.amount / goal.targetAmount) * 100}%` }}
+                              title={milestone.name}
+                            >
+                              {isReached && <span className="milestone-check">✓</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {/* Add to savings button */}
+                    <div className="add-saving-button-container">
+                      <button 
+                        className="add-saving-button" 
+                        onClick={() => setSelectedGoal(goal)}
+                      >
+                        Add to Savings
+                      </button>
+                    </div>
+                    
+                    {/* Recent activity */}
+                    {goal.lastContribution && (
+                      <div className="last-contribution">
+                        <span className="contribution-label">Last contribution: </span>
+                        <span className="contribution-amount">£{goal.lastContribution.amount.toFixed(2)}</span>
+                        <span className="contribution-date">
+                          {new Date(goal.lastContribution.date).toLocaleDateString()}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="goals-actions">
+                <button onClick={() => navigate("/goals")} className="secondary-button">
+                  Manage Goals
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="empty-state">
+              <p>You don't have any financial goals yet.</p>
+              <button 
+                onClick={() => navigate('/goals')} 
+                className="add-goal-button"
+              >
+                Create a Goal
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Monthly Comparison */}
+        <div className="dashboard-section monthly-comparison">
           <h3>Monthly Spending Comparison</h3>
-          {monthlyData.length > 0 ? (
+          {monthlyComparison.length > 0 ? (
+            <div className="chart-container monthly-chart">
             <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={monthlyData}>
-                <CartesianGrid strokeDasharray="3 3" />
+                <BarChart data={monthlyComparison}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                 <XAxis 
                   dataKey="month"
                   tickFormatter={(month) => month.split(' ')[0]}
-                />
-                <YAxis />
+                    label={{ value: 'Month', position: 'insideBottom', offset: -5 }}
+                    tick={{ fill: '#666' }}
+                    axisLine={{ stroke: '#ccc' }}
+                  />
+                  <YAxis 
+                    label={{ value: 'Amount (£)', angle: -90, position: 'insideLeft' }}
+                    tick={{ fill: '#666' }}
+                    axisLine={{ stroke: '#ccc' }}
+                  />
                 <Tooltip 
-                  formatter={(value, name, props) => {
-                    const prefix = props.payload.isPredicted ? 'Predicted: ' : '';
-                    return [`${prefix}£${value.toFixed(2)}`, 'Monthly Spending'];
-                  }}
-                />
-                <Legend />
-                <Bar 
-                  dataKey="total" 
-                  fill="#0ef"
-                  name="Monthly Spending"
-                  fillOpacity={monthlyData[0]?.isPredicted ? 0.5 : 1}
+                    formatter={(value, name, props) => {
+                      if (name === 'actual') {
+                        return [`£${value.toFixed(2)}`, 'You spent'];
+                      } else if (name === 'predicted') {
+                        return [`£${value.toFixed(2)}`, 'Forecasted spending'];
+                      } else if (name === 'budget') {
+                        return [`£${value.toFixed(2)}`, 'Monthly budget limit'];
+                      }
+                      return [`£${value.toFixed(2)}`, name];
+                    }}
+                    labelFormatter={(month) => `${month}`}
+                    contentStyle={{
+                      backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                      border: '1px solid #eee',
+                      borderRadius: '8px',
+                      boxShadow: '0 2px 10px rgba(0, 0, 0, 0.1)'
+                    }}
+                  />
+                  <Legend 
+                    verticalAlign="top" 
+                    height={36}
+                    wrapperStyle={{
+                      paddingBottom: '20px'
+                    }}
+                  />
+                  <Bar 
+                    dataKey="actual" 
+                    fill="#8884d8"
+                    name="You spent"
+                    fillOpacity={1}
+                    radius={[4, 4, 0, 0]}
+                  />
+                  <Bar 
+                    dataKey="predicted" 
+                    fill="#0ef"
+                    name="Forecasted spending"
+                    fillOpacity={0.5}
+                    radius={[4, 4, 0, 0]}
+                  />
+                  <Bar 
+                    dataKey="budget" 
+                    fill="#00AAFF"
+                    name="Monthly budget limit"
+                    fillOpacity={0.3}
+                    radius={[4, 4, 0, 0]}
                 />
               </BarChart>
             </ResponsiveContainer>
+            </div>
           ) : (
-            <div className="chart-container">
+            <div className="chart-container monthly-chart">
               <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={generatePredictedMonthlyData(DEFAULT_MONTHLY_BUDGET)}>
-                  <CartesianGrid strokeDasharray="3 3" />
+                <BarChart data={generatePredictedMonthlyData(optimization?.currentBudget || DEFAULT_MONTHLY_BUDGET)}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                   <XAxis 
                     dataKey="month"
                     tickFormatter={(month) => month.split(' ')[0]}
+                    label={{ value: 'Month', position: 'insideBottom', offset: -5 }}
+                    tick={{ fill: '#666' }}
+                    axisLine={{ stroke: '#ccc' }}
                   />
-                  <YAxis />
+                  <YAxis 
+                    label={{ value: 'Amount (£)', angle: -90, position: 'insideLeft' }}
+                    tick={{ fill: '#666' }}
+                    axisLine={{ stroke: '#ccc' }}
+                  />
                   <Tooltip 
-                    formatter={(value) => [`Predicted: £${value.toFixed(2)}`, 'Monthly Spending']}
+                    formatter={(value, name, props) => {
+                      if (name === 'predicted') {
+                        return [`£${value.toFixed(2)}`, 'Forecasted spending'];
+                      } else if (name === 'budget') {
+                        return [`£${value.toFixed(2)}`, 'Monthly budget limit'];
+                      }
+                      return [`£${value.toFixed(2)}`, name];
+                    }}
+                    labelFormatter={(month) => `${month}`}
+                    contentStyle={{
+                      backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                      border: '1px solid #eee',
+                      borderRadius: '8px',
+                      boxShadow: '0 2px 10px rgba(0, 0, 0, 0.1)'
+                    }}
                   />
-                  <Legend />
+                  <Legend 
+                    verticalAlign="top" 
+                    height={36}
+                    wrapperStyle={{
+                      paddingBottom: '20px'
+                    }}
+                  />
                   <Bar 
-                    dataKey="total" 
+                    dataKey="predicted" 
                     fill="#0ef"
+                    name="Forecasted spending"
                     fillOpacity={0.5}
-                    name="Predicted Monthly Spending"
+                    radius={[4, 4, 0, 0]}
+                  />
+                  <Bar 
+                    dataKey="budget" 
+                    fill="#00AAFF"
+                    name="Monthly budget limit"
+                    fillOpacity={0.3}
+                    radius={[4, 4, 0, 0]}
                   />
                 </BarChart>
               </ResponsiveContainer>
               <div className="prediction-note">
-                <p>* Showing predicted monthly spending based on your budget of £{DEFAULT_MONTHLY_BUDGET}</p>
+                <p>* Showing forecasted monthly spending based on your budget limit of £{optimization?.currentBudget || DEFAULT_MONTHLY_BUDGET}</p>
               </div>
             </div>
           )}
@@ -1017,9 +1671,13 @@ const BudgetDashboard = () => {
         <div className="dashboard-section">
           <h3>Spending Distribution</h3>
           <ResponsiveContainer width="100%" height={300}>
-            <PieChart>
+            <PieChart style={{ background: 'transparent' }}>
               <Pie
-                data={categoryDistribution}
+                data={categoryDistribution.length > 0 ? categoryDistribution : Object.entries(DEFAULT_CATEGORIES).map(([name, percentage]) => ({
+                  name,
+                  value: DEFAULT_MONTHLY_BUDGET * percentage,
+                  percentage: percentage * 100
+                }))}
                 dataKey="value"
                 nameKey="name"
                 cx="50%"
@@ -1027,7 +1685,11 @@ const BudgetDashboard = () => {
                 outerRadius={100}
                 label={({ name, percentage }) => `${name} (${percentage}%)`}
               >
-                {categoryDistribution.map((entry, index) => (
+                {(categoryDistribution.length > 0 ? categoryDistribution : Object.entries(DEFAULT_CATEGORIES).map(([name, percentage]) => ({
+                  name,
+                  value: DEFAULT_MONTHLY_BUDGET * percentage,
+                  percentage: percentage * 100
+                }))).map((entry, index) => (
                   <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                 ))}
               </Pie>
@@ -1035,6 +1697,17 @@ const BudgetDashboard = () => {
               <Legend />
             </PieChart>
           </ResponsiveContainer>
+          {categoryDistribution.length === 0 && (
+            <div className="empty-state">
+              <p>No spending data available yet.</p>
+              <button 
+                onClick={() => navigate('/add-transaction')} 
+                className="add-transaction-button"
+              >
+                Add Transaction
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Detailed Recommendations */}
@@ -1067,7 +1740,774 @@ const BudgetDashboard = () => {
         
         {renderEfficiencyLeaderboard()}
         
-        <style>{styles}</style>
+        {renderBudgetModal()}
+        
+        {/* Add Saving Modal */}
+        {selectedGoal && (
+          <div className="modal-overlay">
+            <div className="saving-modal">
+              <h3>Add to {selectedGoal.name}</h3>
+              <div className="saving-modal-content">
+                <div className="saving-input-group">
+                  <label>Amount (£)</label>
+                  <input 
+                    type="number" 
+                    value={newSavingAmount} 
+                    onChange={(e) => setNewSavingAmount(e.target.value)}
+                    placeholder="Enter amount"
+                    min="0.01"
+                    step="0.01"
+                    autoFocus
+                  />
+                </div>
+                <div className="goal-summary">
+                  <div className="goal-summary-row">
+                    <span>Current amount:</span>
+                    <span>£{selectedGoal.currentAmount.toFixed(2)}</span>
+                  </div>
+                  <div className="goal-summary-row">
+                    <span>Target amount:</span>
+                    <span>£{selectedGoal.targetAmount.toFixed(2)}</span>
+                  </div>
+                  <div className="goal-summary-row">
+                    <span>Remaining:</span>
+                    <span>£{(selectedGoal.targetAmount - selectedGoal.currentAmount).toFixed(2)}</span>
+                  </div>
+                  {selectedGoal.milestones && selectedGoal.milestones.length > 0 && (
+                    <div className="next-milestone">
+                      <span>Next milestone:</span>
+                      {selectedGoal.milestones.find(m => m.amount > selectedGoal.currentAmount) ? (
+                        <span>{selectedGoal.milestones.find(m => m.amount > selectedGoal.currentAmount).name} 
+                          (£{selectedGoal.milestones.find(m => m.amount > selectedGoal.currentAmount).amount.toFixed(2)})
+                        </span>
+                      ) : (
+                        <span>All milestones reached!</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="saving-modal-actions">
+                <button 
+                  className="secondary-button" 
+                  onClick={() => {
+                    setSelectedGoal(null);
+                    setNewSavingAmount('');
+                  }}
+                >
+                  Cancel
+                </button>
+                <button 
+                  className="primary-button" 
+                  onClick={() => addSavingToGoal(selectedGoal.id, newSavingAmount)}
+                  disabled={!newSavingAmount || isNaN(newSavingAmount) || parseFloat(newSavingAmount) <= 0}
+                >
+                  Add Saving
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {/* Milestone Celebration Modal */}
+        {renderMilestoneModal()}
+        
+        {/* Savings Modal */}
+        {renderSavingsModal()}
+        
+        <style>{`
+          ${styles}
+          
+          /* Budget Management Styles */
+          .dashboard-section {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 30px;
+          }
+          
+          .section-header h3 {
+            color: #19e6ff;
+            margin-top: 0;
+            margin-bottom: 20px;
+            font-size: 1.5rem;
+          }
+          
+          .current-budget {
+            margin-bottom: 20px;
+          }
+          
+          .budget-input-section {
+            margin-bottom: 24px;
+            background: rgba(0, 0, 0, 0.2);
+            padding: 16px;
+            border-radius: 8px;
+          }
+          
+          .budget-input-group {
+            margin-bottom: 12px;
+          }
+          
+          .budget-input-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #e0e0e0;
+            font-size: 1rem;
+          }
+          
+          .budget-input-wrapper {
+            display: flex;
+            gap: 10px;
+          }
+          
+          .budget-input-wrapper input {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 1rem;
+            color: white;
+          }
+          
+          .budget-input-wrapper input:focus {
+            outline: none;
+            border-color: #19e6ff;
+            box-shadow: 0 0 0 2px rgba(25, 230, 255, 0.2);
+          }
+          
+          .save-budget-button {
+            background: linear-gradient(135deg, #19e6ff 0%, #0ef 100%);
+            color: #23262b;
+            border: none;
+            border-radius: 8px;
+            padding: 0 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+          }
+          
+          .save-budget-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 238, 255, 0.3);
+          }
+          
+          .budget-categories {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 16px;
+          }
+          
+          .budget-category {
+            background: rgba(0, 0, 0, 0.15);
+            border-radius: 10px;
+            padding: 16px;
+            transition: all 0.3s;
+          }
+          
+          .budget-category:hover {
+            background: rgba(0, 0, 0, 0.25);
+            transform: translateY(-2px);
+          }
+          
+          .category-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+          }
+          
+          .category-name {
+            font-weight: 500;
+            color: #e0e0e0;
+          }
+          
+          .category-input {
+            display: flex;
+            align-items: center;
+          }
+          
+          .category-input input {
+            width: 60px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+            padding: 6px;
+            color: white;
+            margin-right: 4px;
+            text-align: right;
+          }
+          
+          .category-input input:focus {
+            outline: none;
+            border-color: #19e6ff;
+          }
+          
+          .category-input span {
+            color: #a0a0a0;
+          }
+          
+          .category-amount {
+            font-size: 1.2rem;
+            color: #19e6ff;
+            font-weight: 600;
+            margin-top: 8px;
+            text-align: right;
+          }
+
+          /* Goals Styles */
+          .goals-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 24px;
+            margin-bottom: 24px;
+          }
+          
+          .goal-card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+            transition: transform 0.3s;
+          }
+          
+          .goal-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+          }
+          
+          .goal-title {
+            font-size: 1.3rem;
+            color: #ffffff;
+            margin-bottom: 15px;
+          }
+          
+          .goal-amounts {
+            display: flex;
+            align-items: baseline;
+            margin-bottom: 10px;
+          }
+          
+          .current-amount {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: #19e6ff;
+            margin-right: 5px;
+          }
+          
+          .target-amount {
+            color: #a0a0a0;
+            font-size: 1rem;
+          }
+          
+          .progress-bar-container {
+            height: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 5px;
+            overflow: hidden;
+            margin-bottom: 10px;
+          }
+          
+          .progress-bar {
+            height: 100%;
+            background: linear-gradient(to right, #0088FE, #19e6ff);
+            border-radius: 5px;
+            transition: width 1s ease-in-out;
+          }
+          
+          .progress-percentage {
+            color: #e0e0e0;
+            font-size: 0.9rem;
+            margin-bottom: 10px;
+          }
+          
+          .goal-date {
+            color: #a0a0a0;
+            font-size: 0.9rem;
+            font-style: italic;
+          }
+          
+          .goals-actions {
+            display: flex;
+            justify-content: center;
+            margin-top: 10px;
+          }
+          
+          /* Milestone styles */
+          .milestones-preview {
+            position: relative;
+            height: 20px;
+            margin: 5px 0 15px;
+          }
+          
+          .milestone-dot {
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            background: rgba(255, 255, 255, 0.2);
+            border: 2px solid rgba(255, 255, 255, 0.4);
+            border-radius: 50%;
+            transform: translateX(-50%);
+            cursor: pointer;
+            transition: all 0.3s;
+          }
+          
+          .milestone-dot.reached {
+            background: rgba(0, 196, 159, 0.8);
+            border-color: #00C49F;
+          }
+          
+          .milestone-check {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 10px;
+          }
+          
+          .milestone-dot:hover::after {
+            content: attr(title);
+            position: absolute;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #23262b;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            white-space: nowrap;
+            z-index: 10;
+          }
+          
+          .add-saving-button-container {
+            margin: 15px 0;
+            text-align: center;
+          }
+          
+          .add-saving-button {
+            background: rgba(0, 196, 159, 0.2);
+            color: #00C49F;
+            border: 1px solid #00C49F;
+            border-radius: 20px;
+            padding: 8px 16px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s;
+          }
+          
+          .add-saving-button:hover {
+            background: rgba(0, 196, 159, 0.3);
+            transform: translateY(-2px);
+          }
+          
+          .last-contribution {
+            font-size: 0.9rem;
+            color: #a0a0a0;
+            margin-top: 10px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+          }
+          
+          .contribution-amount {
+            color: #00C49F;
+            font-weight: 600;
+          }
+          
+          .contribution-date {
+            font-style: italic;
+          }
+          
+          /* Modal styles for saving */
+          .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+          }
+          
+          .saving-modal {
+            background: #2a2f3a;
+            border-radius: 16px;
+            width: 90%;
+            max-width: 500px;
+            padding: 24px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+          }
+          
+          .saving-modal h3 {
+            color: #19e6ff;
+            text-align: center;
+            margin-bottom: 20px;
+          }
+          
+          .saving-modal-content {
+            margin-bottom: 24px;
+          }
+          
+          .saving-input-group {
+            margin-bottom: 20px;
+          }
+          
+          .saving-input-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 1rem;
+            color: #e0e0e0;
+          }
+          
+          .saving-input-group input {
+            width: 100%;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 1.1rem;
+            color: white;
+            transition: all 0.3s;
+          }
+          
+          .saving-input-group input:focus {
+            border-color: #19e6ff;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(25, 230, 255, 0.2);
+          }
+          
+          .goal-summary {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+            padding: 16px;
+          }
+          
+          .goal-summary-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            color: #e0e0e0;
+          }
+          
+          .next-milestone {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            color: #00C49F;
+          }
+          
+          .saving-modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+          }
+          
+          /* Milestone celebration modal */
+          .milestone-modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+          }
+          
+          .milestone-modal {
+            background: #2a2f3a;
+            border-radius: 16px;
+            width: 90%;
+            max-width: 450px;
+            padding: 30px;
+            text-align: center;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+            position: relative;
+            overflow: hidden;
+          }
+          
+          .milestone-header {
+            margin-bottom: 20px;
+          }
+          
+          .milestone-icon {
+            font-size: 3rem;
+            display: block;
+            margin-bottom: 10px;
+          }
+          
+          .milestone-modal h3 {
+            font-size: 1.8rem;
+            color: #19e6ff;
+            margin: 0;
+          }
+          
+          .milestone-content {
+            margin-bottom: 30px;
+          }
+          
+          .milestone-name {
+            font-size: 1.4rem;
+            color: white;
+            margin-bottom: 10px;
+          }
+          
+          .milestone-description {
+            color: #e0e0e0;
+            margin-bottom: 20px;
+          }
+          
+          .milestone-amount {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #00C49F;
+            margin-bottom: 20px;
+          }
+          
+          .confetti-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 100%;
+            pointer-events: none;
+          }
+          
+          /* Empty state */
+          .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 40px 20px;
+            text-align: center;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+          }
+          
+          .empty-state p {
+            color: #e0e0e0;
+            margin-bottom: 20px;
+            font-size: 1.1rem;
+          }
+          
+          .add-goal-button {
+            background: rgba(0, 196, 159, 0.2);
+            color: #00C49F;
+            border: 1px solid #00C49F;
+            border-radius: 20px;
+            padding: 10px 20px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s;
+          }
+          
+          .add-goal-button:hover {
+            background: rgba(0, 196, 159, 0.3);
+            transform: translateY(-2px);
+          }
+
+          /* Add goal button hover */
+          .add-goal-button:hover {
+            background: rgba(0, 196, 159, 0.3);
+            transform: translateY(-2px);
+          }
+
+          /* Monthly Comparison Styles */
+          .monthly-comparison {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 30px;
+          }
+          
+          .monthly-comparison h3 {
+            color: #19e6ff;
+            margin-top: 0;
+            margin-bottom: 20px;
+            font-size: 1.5rem;
+          }
+          
+          .monthly-chart {
+            background: rgba(0, 0, 0, 0.15);
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 15px;
+          }
+          
+          .prediction-note {
+            margin-top: 15px;
+            text-align: center;
+            font-style: italic;
+            color: #a0a0a0;
+            font-size: 0.9rem;
+          }
+          
+          /* Fix default elements to match theme */
+          .recharts-tooltip-cursor {
+            fill: rgba(0, 0, 0, 0.1) !important;
+          }
+          
+          .recharts-default-tooltip {
+            background-color: rgba(42, 47, 58, 0.95) !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            border-radius: 8px !important;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2) !important;
+            padding: 12px !important;
+          }
+          
+          .recharts-tooltip-label {
+            color: white !important;
+            font-weight: 500 !important;
+            margin-bottom: 6px !important;
+          }
+          
+          .recharts-tooltip-item {
+            color: #e0e0e0 !important;
+          }
+          
+          .recharts-tooltip-item-name {
+            color: #a0a0a0 !important;
+          }
+          
+          .recharts-tooltip-item-value {
+            color: #19e6ff !important;
+            font-weight: 600 !important;
+          }
+          
+          /* Budget Modal Styles */
+          .budget-modal {
+            background: #2a2f3a;
+            border-radius: 16px;
+            width: 90%;
+            max-width: 600px;
+            padding: 30px;
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+          }
+          
+          .budget-modal h3 {
+            color: #19e6ff;
+            text-align: center;
+            font-size: 1.8rem;
+            margin-bottom: 25px;
+          }
+          
+          .budget-modal h4 {
+            color: #e0e0e0;
+            margin: 20px 0 15px;
+            font-size: 1.2rem;
+          }
+          
+          .category-budgets {
+            margin-top: 25px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+            padding: 16px;
+          }
+          
+          .category-budget-input {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+          }
+          
+          .category-budget-input:last-child {
+            margin-bottom: 0;
+            padding-bottom: 0;
+            border-bottom: none;
+          }
+          
+          .category-budget-input label {
+            color: #e0e0e0;
+            font-size: 1rem;
+          }
+          
+          .budget-percent-input {
+            display: flex;
+            align-items: center;
+          }
+          
+          .budget-percent-input input {
+            width: 65px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 6px;
+            padding: 8px;
+            color: white;
+            font-size: 1rem;
+            text-align: right;
+          }
+          
+          .budget-percent-input input:focus {
+            outline: none;
+            border-color: #19e6ff;
+            box-shadow: 0 0 0 2px rgba(25, 230, 255, 0.2);
+          }
+          
+          .budget-percent-input span {
+            margin-left: 6px;
+            color: #a0a0a0;
+          }
+          
+          .modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 15px;
+            margin-top: 30px;
+          }
+          
+          .primary-button,
+          .secondary-button {
+            padding: 12px 24px;
+            border-radius: 30px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+          }
+          
+          .primary-button {
+            background: linear-gradient(135deg, #19e6ff 0%, #0ef 100%);
+            color: #23262b;
+            border: none;
+          }
+          
+          .secondary-button {
+            background: rgba(255, 255, 255, 0.1);
+            color: #e0e0e0;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+          }
+          
+          .primary-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 238, 255, 0.3);
+          }
+          
+          .secondary-button:hover {
+            background: rgba(255, 255, 255, 0.15);
+            border-color: #19e6ff;
+          }
+          
+          .primary-button:disabled {
+            background: #616161;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+          }
+        `}</style>
       </>
     );
   };
@@ -1087,7 +2527,160 @@ const BudgetDashboard = () => {
         </div>
       )}
 
+      {/* Main Content */}
       {renderContent()}
+
+      {/* Budget Modal */}
+      {renderBudgetModal()}
+      
+      {/* Milestone Modal */}
+      {renderMilestoneModal()}
+      
+      {/* Savings Modal */}
+      {renderSavingsModal()}
+
+      <style>{`
+        .budget-dashboard {
+          max-width: 1200px;
+          margin: 0 auto;
+          padding: 30px 20px;
+        }
+        
+        .budget-dashboard h2 {
+          color: #19e6ff;
+          font-size: 2.2rem;
+          margin-bottom: 30px;
+          text-align: center;
+        }
+        
+        .dashboard-alerts {
+          margin-bottom: 30px;
+        }
+        
+        .alert {
+          padding: 15px 20px;
+          border-radius: 10px;
+          margin-bottom: 15px;
+          font-size: 1rem;
+          line-height: 1.5;
+        }
+        
+        .alert-warning {
+          background: rgba(255, 171, 0, 0.15);
+          border-left: 4px solid #ffab00;
+          color: #ffab00;
+        }
+        
+        .alert-info {
+          background: rgba(25, 230, 255, 0.15);
+          border-left: 4px solid #19e6ff;
+          color: #19e6ff;
+        }
+        
+        .alert-danger {
+          background: rgba(255, 100, 100, 0.15);
+          border-left: 4px solid #ff6464;
+          color: #ff6464;
+        }
+        
+        .loading-container {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          padding: 60px 0;
+          text-align: center;
+        }
+        
+        .loading-spinner {
+          width: 50px;
+          height: 50px;
+          border: 4px solid rgba(255, 255, 255, 0.1);
+          border-radius: 50%;
+          border-left-color: #19e6ff;
+          animation: spin 1s linear infinite;
+          margin-bottom: 20px;
+        }
+        
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        
+        .loading-container p {
+          color: #19e6ff;
+          font-size: 1.2rem;
+        }
+        
+        .error-container {
+          background: rgba(255, 100, 100, 0.1);
+          border-radius: 16px;
+          padding: 40px 30px;
+          text-align: center;
+          max-width: 600px;
+          margin: 0 auto;
+        }
+        
+        .error-container h3 {
+          color: #ff6464;
+          font-size: 1.8rem;
+          margin-bottom: 15px;
+        }
+        
+        .error-container p {
+          color: #e0e0e0;
+          margin-bottom: 25px;
+          line-height: 1.6;
+        }
+        
+        .error-actions {
+          display: flex;
+          justify-content: center;
+          gap: 15px;
+        }
+        
+        .error-actions button {
+          padding: 10px 20px;
+          border-radius: 8px;
+          background: rgba(255, 255, 255, 0.1);
+          color: #e0e0e0;
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          cursor: pointer;
+          transition: all 0.3s;
+        }
+        
+        .error-actions button:hover {
+          background: rgba(25, 230, 255, 0.2);
+          border-color: #19e6ff;
+          color: #19e6ff;
+          transform: translateY(-2px);
+        }
+        
+        .debug-info {
+          margin-top: 20px;
+          margin-bottom: 25px;
+          text-align: left;
+          padding: 15px;
+          background: rgba(0, 0, 0, 0.3);
+          border-radius: 8px;
+          max-height: 200px;
+          overflow-y: auto;
+        }
+        
+        .debug-info h4 {
+          color: #a0a0a0;
+          margin-bottom: 10px;
+          font-size: 0.9rem;
+        }
+        
+        .debug-info pre {
+          color: #a0a0a0;
+          font-size: 0.8rem;
+          overflow-x: auto;
+          white-space: pre-wrap;
+          word-wrap: break-word;
+        }
+      `}</style>
     </div>
   );
 };
