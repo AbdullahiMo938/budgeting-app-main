@@ -1493,12 +1493,12 @@ const BudgetDashboard = () => {
                     )}
                     {/* Add to savings button */}
                     <div className="add-saving-button-container">
-                      <button 
+                <button 
                         className="add-saving-button" 
                         onClick={() => setSelectedGoal(goal)}
-                      >
+                >
                         Add to Savings
-                      </button>
+                </button>
                     </div>
                     
                     {/* Recent activity */}
@@ -1509,9 +1509,9 @@ const BudgetDashboard = () => {
                         <span className="contribution-date">
                           {new Date(goal.lastContribution.date).toLocaleDateString()}
                         </span>
-                      </div>
-                    )}
-                  </div>
+              </div>
+            )}
+          </div>
                 ))}
               </div>
               <div className="goals-actions">
@@ -1554,7 +1554,7 @@ const BudgetDashboard = () => {
                     axisLine={{ stroke: '#ccc' }}
                   />
                 <Tooltip 
-                    formatter={(value, name, props) => {
+                  formatter={(value, name, props) => {
                       if (name === 'actual') {
                         return [`£${value.toFixed(2)}`, 'You spent'];
                       } else if (name === 'predicted') {
@@ -1588,7 +1588,7 @@ const BudgetDashboard = () => {
                   />
                   <Bar 
                     dataKey="predicted" 
-                    fill="#0ef"
+                  fill="#0ef"
                     name="Forecasted spending"
                     fillOpacity={0.5}
                     radius={[4, 4, 0, 0]}
